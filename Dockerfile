@@ -3,16 +3,16 @@ FROM ubuntu:22.04
 # منع النوافذ التفاعلية أثناء التثبيت
 ENV DEBIAN_FRONTEND=noninteractive
 
-# تثبيت الحزم المطلوبة (تمت إضافة pkg-config المطلوبة للإصدار الجديد)
+# تثبيت الحزم المطلوبة
 RUN apt-get update && apt-get install -y \
     g++ build-essential libssl-dev zip unzip curl git pkg-config \
     python3 python3-pip
 
-# بناء أداة zsign بالطريقة الرسمية المحدثة باستخدام make
+# بناء أداة zsign بالطريقة الرسمية ونقلها من مجلد bin
 RUN git clone https://github.com/zhlynn/zsign.git /tmp/zsign && \
     cd /tmp/zsign/build/linux && \
     make && \
-    cp zsign /usr/local/bin/zsign && \
+    cp ../../bin/zsign /usr/local/bin/zsign && \
     rm -rf /tmp/zsign
 
 WORKDIR /app
