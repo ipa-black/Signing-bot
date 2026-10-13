@@ -20,8 +20,8 @@ COPY . /app
 # تثبيت مكتبات البايثون
 RUN pip3 install -no-cache-dir -r requirements.txt
 
-# إنشاء المجلدات الضرورية
-RUN mkdir -p certs signed_ipas ipas
+# إنشاء المجلدات الضرورية لتجنب الأخطاء
+RUN mkdir -p certs signed_ipas ipas images templates
 
-# تشغيل البوت
+# تشغيل البوت وواجهة الويب معاً
 CMD ["python3", "main.py"]
