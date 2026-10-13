@@ -4,124 +4,157 @@ import subprocess
 import requests
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from fastapi import FastAPI, Response
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+import uvicorn
 
-# --- المتغيرات الأساسية (قم بتعديلها) ---
-BOT_TOKEN = "ضع_توكن_البوت_هنا"
-API_ID = 123456 # ضع الـ API_ID
-API_HASH = "ضع_الـ_API_HASH_هنا"
-VERCEL_WEB_URL = "https://your-vercel-app.vercel.app/?app="
+# ==========================================
+# استدعاء المتغيرات والأسرار بأمان من سيرفر Render
+# ==========================================
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+API_ID = os.environ.get("API_ID")
+API_HASH = os.environ.get("API_HASH")
 
-# --- إعدادات GitHub ---
-GITHUB_TOKEN = "ضع_توكن_جيت_هب_هنا"
-GITHUB_REPO = "ibablack/store" # ضع اسم حسابك ومستودعك
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_OWNER = os.environ.get("GITHUB_OWNER") 
+GITHUB_REPO = os.environ.get("GITHUB_REPO")   
+RENDER_APP_URL = os.environ.get("RENDER_APP_URL") 
 
-os.makedirs("certs", exist_ok=True)
-os.makedirs("signed_ipas", exist_ok=True)
-os.makedirs("ipas", exist_ok=True)
+if not all([BOT_TOKEN, API_ID, API_HASH, GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO, RENDER_APP_URL]):
+    print("❌ خطأ: هناك توكنات مفقودة! الرجاء إضافتها في قسم Environment Variables في Render.")
+    exit(1)
 
-user_states = {}
+for d in ["certs", "signed_ipas", "ipas", "images", "templates"]:
+    os.makedirs(d, exist_ok=True)
+
 APPS = ["esign", "ksign", "gbox", "scarlet", "feather", "zsign", "cinemana"]
+user_states = {}
 
-bot = Client("SignBot", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
+# ==========================================
+# 1. قسم FastAPI (لواجهة الويب والتثبيت المباشر)
+# ==========================================
+api = FastAPI()
+api.mount("/images", StaticFiles(directory="images"), name="images")
+
+@api.get("/")
+async def serve_frontend():
+    return FileResponse("templates/index.html")
+
+@api.get("/api/plist")
+async def generate_plist(app: str, udid: str):
+    ipaUrl = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/signed-{udid}/{app}_{udid}.ipa"
+    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>items</key>
+    <array><dict>
+        <key>assets</key>
+        <array><dict><key>kind</key><string>software-package</string><key>url</key><string>{ipaUrl}</string></dict></array>
+        <key>metadata</key>
+        <dict>
+            <key>bundle-identifier</key><string>com.ibablack.{app}</string>
+            <key>bundle-version</key><string>1.0</string>
+            <key>kind</key><string>software</string>
+            <key>title</key><string>{app.upper()}</string>
+        </dict>
+    </dict></array>
+</dict>
+</plist>"""
+    return Response(
+        content=plist_content, 
+        media_type="application/x-apple-aspen-manifest",
+        headers={"Content-Disposition": f'attachment; filename="{app}.plist"'}
+    )
+
+# ==========================================
+# 2. قسم Pyrogram (البوت والتوقيع والرفع)
+# ==========================================
+bot = Client("SignBot", bot_token=BOT_TOKEN, api_id=int(API_ID), api_hash=API_HASH)
 
 def upload_to_github_release(udid, signed_files):
     headers_api = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
     tag_name = f"signed-{udid}"
     
-    # 1. حذف الـ Release القديم إذا وجد لنفس الـ UDID
-    check_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{tag_name}"
-    res = requests.get(check_url, headers=headers_api)
+    # حذف الريليس القديم إن وجد
+    res = requests.get(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tags/{tag_name}", headers=headers_api)
     if res.status_code == 200:
-        rel_id = res.json()["id"]
-        requests.delete(f"https://api.github.com/repos/{GITHUB_REPO}/releases/{rel_id}", headers=headers_api)
-        requests.delete(f"https://api.github.com/repos/{GITHUB_REPO}/git/refs/tags/{tag_name}", headers=headers_api)
+        requests.delete(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/{res.json()['id']}", headers=headers_api)
+        requests.delete(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/refs/tags/{tag_name}", headers=headers_api)
 
-    # 2. إنشاء Release جديد
-    create_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
-    data = {"tag_name": tag_name, "name": f"Signed Apps - {udid}", "body": "تم التوقيع والرفع تلقائياً بواسطة البوت."}
-    res = requests.post(create_url, headers=headers_api, json=data)
+    # إنشاء ريليس جديد
+    res = requests.post(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases", headers=headers_api, json={"tag_name": tag_name, "name": f"Signed - {udid}"})
     release_id = res.json()["id"]
+    upload_url = f"https://uploads.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/{release_id}/assets"
 
-    # 3. رفع التطبيقات الموقعة
-    upload_base_url = f"https://uploads.github.com/repos/{GITHUB_REPO}/releases/{release_id}/assets"
     headers_upload = {"Authorization": f"token {GITHUB_TOKEN}", "Content-Type": "application/octet-stream"}
-
     for file_path in signed_files:
         if os.path.exists(file_path):
-            file_name = os.path.basename(file_path)
             with open(file_path, "rb") as f:
-                requests.post(f"{upload_base_url}?name={file_name}", headers=headers_upload, data=f)
+                requests.post(f"{upload_url}?name={os.path.basename(file_path)}", headers=headers_upload, data=f)
 
 @bot.on_message(filters.document & filters.private)
-async def handle_certificates(client: Client, message: Message):
-    user_id = message.from_user.id
-    file_name = message.document.file_name
-    
-    if user_id not in user_states:
-        user_states[user_id] = {"p12_id": None, "prov_id": None, "udid": None, "step": "waiting_for_files"}
+async def handle_certs(client: Client, message: Message):
+    user_id, file_name = message.from_user.id, message.document.file_name
+    if user_id not in user_states: user_states[user_id] = {"p12_id": None, "prov_id": None, "udid": None, "step": "waiting_for_files"}
     
     state = user_states[user_id]
-    
-    if file_name.endswith(".p12"):
-        state["p12_id"] = message.document.file_id
-        if not state["udid"]: state["udid"] = file_name.rsplit('.', 1)[0]
-    elif file_name.endswith(".mobileprovision"):
-        state["prov_id"] = message.document.file_id
-        if not state["udid"]: state["udid"] = file_name.rsplit('.', 1)[0]
-    else:
-        return await message.reply_text("❌ البوت يقبل فقط ملفات `.p12` و `.mobileprovision`.")
+    if file_name.endswith(".p12"): state["p12_id"], state["udid"] = message.document.file_id, state["udid"] or file_name.rsplit('.', 1)[0]
+    elif file_name.endswith(".mobileprovision"): state["prov_id"], state["udid"] = message.document.file_id, state["udid"] or file_name.rsplit('.', 1)[0]
+    else: return await message.reply_text("❌ فقط ملفات .p12 و .mobileprovision")
 
     if state["p12_id"] and state["prov_id"]:
         state["step"] = "waiting_for_password"
-        await message.reply_text("✅ تم استلام ملفات الشهادة بالكامل.\nالرجاء إرسال **كلمة المرور** الخاصة بالشهادة:")
+        await message.reply_text("✅ تم استلام الشهادة.\nالرجاء إرسال **كلمة المرور**:")
     else:
         missing = ".mobileprovision" if state["p12_id"] else ".p12"
-        await message.reply_text(f"📥 تم استلام `{file_name}`.\nبانتظار إرسال ملف `{missing}`...")
+        await message.reply_text(f"📥 تم استلام `{file_name}`.\nبانتظار `{missing}`...")
 
 @bot.on_message(filters.text & filters.private)
 async def handle_password(client: Client, message: Message):
     user_id = message.from_user.id
-    
     if user_id in user_states and user_states[user_id].get("step") == "waiting_for_password":
-        password = message.text
-        udid = user_states[user_id]["udid"]
-        state = user_states[user_id]
+        pwd, udid, state = message.text, user_states[user_id]["udid"], user_states[user_id]
+        processing_msg = await message.reply_text("⏳ جاري التوقيع المحلي...")
         
-        processing_msg = await message.reply_text("⏳ جاري التوقيع المحلي للتطبيقات...")
-        
-        p12_path = f"certs/{udid}.p12"
-        prov_path = f"certs/{udid}.mobileprovision"
+        p12_path, prov_path = f"certs/{udid}.p12", f"certs/{udid}.mobileprovision"
         await bot.download_media(state["p12_id"], file_name=p12_path)
         await bot.download_media(state["prov_id"], file_name=prov_path)
         
-        signed_files_to_upload = []
-        for app_name in APPS:
-            base_ipa = f"ipas/{app_name}.ipa"
-            output_ipa = f"signed_ipas/{app_name}_{udid}.ipa"
-            if os.path.exists(base_ipa):
-                command = f"zsign -k {p12_path} -p '{password}' -m {prov_path} -o {output_ipa} {base_ipa}"
-                subprocess.run(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                signed_files_to_upload.append(output_ipa)
+        signed_files = []
+        for app in APPS:
+            base, output = f"ipas/{app}.ipa", f"signed_ipas/{app}_{udid}.ipa"
+            if os.path.exists(base):
+                subprocess.run(f"zsign -k {p12_path} -p '{pwd}' -m {prov_path} -o {output} {base}", shell=True, capture_output=True)
+                signed_files.append(output)
         
-        await processing_msg.edit_text("☁️ تم التوقيع! جاري الرفع إلى سيرفرات التثبيت (GitHub Releases)...")
-        await asyncio.to_thread(upload_to_github_release, udid, signed_files_to_upload)
+        await processing_msg.edit_text("☁️ جاري الرفع إلى سيرفرات GitHub Releases المباشرة...")
+        await asyncio.to_thread(upload_to_github_release, udid, signed_files)
 
-        # تنظيف الملفات
-        if os.path.exists(p12_path): os.remove(p12_path)
-        if os.path.exists(prov_path): os.remove(prov_path)
-        for f in signed_files_to_upload:
+        for f in [p12_path, prov_path] + signed_files: 
             if os.path.exists(f): os.remove(f)
 
         buttons = [
-            [InlineKeyboardButton("Esign", url=f"{VERCEL_WEB_URL}esign&udid={udid}"), InlineKeyboardButton("Ksign", url=f"{VERCEL_WEB_URL}ksign&udid={udid}")],
-            [InlineKeyboardButton("G BOX", url=f"{VERCEL_WEB_URL}gbox&udid={udid}"), InlineKeyboardButton("SCARLET", url=f"{VERCEL_WEB_URL}scarlet&udid={udid}")],
-            [InlineKeyboardButton("FEATHER", url=f"{VERCEL_WEB_URL}feather&udid={udid}"), InlineKeyboardButton("ZSIGN", url=f"{VERCEL_WEB_URL}zsign&udid={udid}")],
-            [InlineKeyboardButton("وسينمانا", url=f"{VERCEL_WEB_URL}cinemana&udid={udid}")]
+            [InlineKeyboardButton("Esign", url=f"{RENDER_APP_URL}/?app=esign&udid={udid}"), InlineKeyboardButton("Ksign", url=f"{RENDER_APP_URL}/?app=ksign&udid={udid}")],
+            [InlineKeyboardButton("G BOX", url=f"{RENDER_APP_URL}/?app=gbox&udid={udid}"), InlineKeyboardButton("SCARLET", url=f"{RENDER_APP_URL}/?app=scarlet&udid={udid}")],
+            [InlineKeyboardButton("FEATHER", url=f"{RENDER_APP_URL}/?app=feather&udid={udid}"), InlineKeyboardButton("ZSIGN", url=f"{RENDER_APP_URL}/?app=zsign&udid={udid}")],
+            [InlineKeyboardButton("وسينمانا", url=f"{RENDER_APP_URL}/?app=cinemana&udid={udid}")]
         ]
         
         await processing_msg.delete()
-        await message.reply_text(f"✅ تم توقيع التطبيقات ورفعها بنجاح!\nالـ UDID: `{udid}`\nوهو الآن جاهز للتثبيت:", reply_markup=InlineKeyboardMarkup(buttons))
+        await message.reply_text(f"✅ تم التوقيع والرفع بنجاح!\nالـ UDID: `{udid}`\nوهو الآن جاهز للتثبيت:", reply_markup=InlineKeyboardMarkup(buttons))
         del user_states[user_id]
 
+# ==========================================
+# 3. مشغل النظام الشامل (الجسد الواحد)
+# ==========================================
+async def start_all():
+    await bot.start()
+    port = int(os.environ.get("PORT", 8000))
+    config = uvicorn.Config(api, host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(config)
+    await server.serve()
+
 if __name__ == "__main__":
-    bot.run()
+    asyncio.run(start_all())
