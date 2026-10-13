@@ -10,9 +10,6 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
-# ==========================================
-# استدعاء المتغيرات بأمان من بيئة Render
-# ==========================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 API_ID = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
@@ -23,7 +20,7 @@ GITHUB_REPO = os.environ.get("GITHUB_REPO")
 RENDER_APP_URL = os.environ.get("RENDER_APP_URL") 
 
 if not all([BOT_TOKEN, API_ID, API_HASH, GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO, RENDER_APP_URL]):
-    print("❌ خطأ: هناك توكنات مفقودة! الرجاء إضافتها في قسم Environment Variables.")
+    print("❌ خطأ: هناك توكنات مفقودة!")
     exit(1)
 
 for d in ["certs", "signed_ipas", "ipas", "images", "templates"]:
@@ -32,18 +29,12 @@ for d in ["certs", "signed_ipas", "ipas", "images", "templates"]:
 APPS = ["esign", "ksign", "gbox", "scarlet", "feather", "zsign", "cinemana"]
 user_states = {}
 
-# ==========================================
-# إعداد البوت (بدون تشغيله فوراً)
-# ==========================================
-bot = Client("SignBot", bot_token=BOT_TOKEN, api_id=int(API_ID), api_hash=API_HASH)
+# إضافة in_memory=True مهمة جداً لضمان عدم تعليق البوت في خوادم ريندر
+bot = Client("SignBot", in_memory=True, bot_token=BOT_TOKEN, api_id=int(API_ID), api_hash=API_HASH)
 
-# ==========================================
-# 1. أوامر البوت (الترتيب هنا دقيق جداً ومهم)
-# ==========================================
-
-# أ- أمر /start (يجب أن يكون الأول دائماً)
 @bot.on_message(filters.command("start") & filters.private)
 async def start_command(client: Client, message: Message):
+    print(f"🔔 [مراقبة] تم استلام أمر /start من: {message.from_user.first_name}")
     welcome_text = (
         "👋 أهلاً بك في بوت التوقيع السريع (IBA Black).\n\n"
         "لبدء التوقيع، يرجى إرسال ملفات الشهادة الخاصة بك:\n"
@@ -53,9 +44,9 @@ async def start_command(client: Client, message: Message):
     )
     await message.reply_text(welcome_text)
 
-# ب- استقبال ملفات الشهادات
 @bot.on_message(filters.document & filters.private)
 async def handle_certs(client: Client, message: Message):
+    print(f"📁 [مراقبة] تم استلام ملف: {message.document.file_name}")
     user_id, file_name = message.from_user.id, message.document.file_name
     if user_id not in user_states: user_states[user_id] = {"p12_id": None, "prov_id": None, "udid": None, "step": "waiting_for_files"}
     
@@ -71,11 +62,11 @@ async def handle_certs(client: Client, message: Message):
         missing = ".mobileprovision" if state["p12_id"] else ".p12"
         await message.reply_text(f"📥 تم استلام `{file_name}`.\nبانتظار `{missing}`...")
 
-# ج- استقبال النصوص (كلمة المرور)
 @bot.on_message(filters.text & filters.private)
 async def handle_password(client: Client, message: Message):
     user_id = message.from_user.id
     if user_id in user_states and user_states[user_id].get("step") == "waiting_for_password":
+        print(f"🔑 [مراقبة] تم استلام الباسورد، بدء التوقيع...")
         pwd, udid, state = message.text, user_states[user_id]["udid"], user_states[user_id]
         processing_msg = await message.reply_text("⏳ جاري التوقيع المحلي...")
         
@@ -126,20 +117,12 @@ def upload_to_github_release(udid, signed_files):
             with open(file_path, "rb") as f:
                 requests.post(f"{upload_url}?name={os.path.basename(file_path)}", headers=headers_upload, data=f)
 
-# ==========================================
-# 2. إعداد التشغيل الشامل (Lifespan)
-# ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # تشغيل البوت عند إقلاع السيرفر
     await bot.start()
     yield
-    # إيقاف البوت بأمان عند إغلاق السيرفر
     await bot.stop()
 
-# ==========================================
-# 3. قسم FastAPI (لواجهة الويب والتثبيت)
-# ==========================================
 api = FastAPI(lifespan=lifespan)
 api.mount("/images", StaticFiles(directory="images"), name="images")
 
