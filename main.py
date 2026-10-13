@@ -1,7 +1,8 @@
-import asyncio
 import os
 import subprocess
 import requests
+import asyncio
+from contextlib import asynccontextmanager
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 from fastapi import FastAPI, Response
@@ -32,68 +33,15 @@ APPS = ["esign", "ksign", "gbox", "scarlet", "feather", "zsign", "cinemana"]
 user_states = {}
 
 # ==========================================
-# 1. قسم FastAPI (لواجهة الويب والتثبيت)
-# ==========================================
-api = FastAPI()
-api.mount("/images", StaticFiles(directory="images"), name="images")
-
-@api.get("/")
-async def serve_frontend():
-    return FileResponse("templates/index.html")
-
-@api.get("/api/plist")
-async def generate_plist(app: str, udid: str):
-    ipaUrl = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/signed-{udid}/{app}_{udid}.ipa"
-    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>items</key>
-    <array><dict>
-        <key>assets</key>
-        <array><dict><key>kind</key><string>software-package</string><key>url</key><string>{ipaUrl}</string></dict></array>
-        <key>metadata</key>
-        <dict>
-            <key>bundle-identifier</key><string>com.ibablack.{app}</string>
-            <key>bundle-version</key><string>1.0</string>
-            <key>kind</key><string>software</string>
-            <key>title</key><string>{app.upper()}</string>
-        </dict>
-    </dict></array>
-</dict>
-</plist>"""
-    return Response(
-        content=plist_content, 
-        media_type="application/x-apple-aspen-manifest",
-        headers={"Content-Disposition": f'attachment; filename="{app}.plist"'}
-    )
-
-# ==========================================
-# 2. قسم Pyrogram (البوت والتوقيع والرفع)
+# إعداد البوت (بدون تشغيله فوراً)
 # ==========================================
 bot = Client("SignBot", bot_token=BOT_TOKEN, api_id=int(API_ID), api_hash=API_HASH)
 
-def upload_to_github_release(udid, signed_files):
-    headers_api = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-    tag_name = f"signed-{udid}"
-    
-    # حذف الريليس القديم إن وجد
-    res = requests.get(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tags/{tag_name}", headers=headers_api)
-    if res.status_code == 200:
-        requests.delete(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/{res.json()['id']}", headers=headers_api)
-        requests.delete(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/refs/tags/{tag_name}", headers=headers_api)
+# ==========================================
+# 1. أوامر البوت (الترتيب هنا دقيق جداً ومهم)
+# ==========================================
 
-    # إنشاء ريليس جديد
-    res = requests.post(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases", headers=headers_api, json={"tag_name": tag_name, "name": f"Signed - {udid}"})
-    release_id = res.json()["id"]
-    upload_url = f"https://uploads.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/{release_id}/assets"
-
-    headers_upload = {"Authorization": f"token {GITHUB_TOKEN}", "Content-Type": "application/octet-stream"}
-    for file_path in signed_files:
-        if os.path.exists(file_path):
-            with open(file_path, "rb") as f:
-                requests.post(f"{upload_url}?name={os.path.basename(file_path)}", headers=headers_upload, data=f)
-
+# أ- أمر /start (يجب أن يكون الأول دائماً)
 @bot.on_message(filters.command("start") & filters.private)
 async def start_command(client: Client, message: Message):
     welcome_text = (
@@ -105,6 +53,7 @@ async def start_command(client: Client, message: Message):
     )
     await message.reply_text(welcome_text)
 
+# ب- استقبال ملفات الشهادات
 @bot.on_message(filters.document & filters.private)
 async def handle_certs(client: Client, message: Message):
     user_id, file_name = message.from_user.id, message.document.file_name
@@ -122,6 +71,7 @@ async def handle_certs(client: Client, message: Message):
         missing = ".mobileprovision" if state["p12_id"] else ".p12"
         await message.reply_text(f"📥 تم استلام `{file_name}`.\nبانتظار `{missing}`...")
 
+# ج- استقبال النصوص (كلمة المرور)
 @bot.on_message(filters.text & filters.private)
 async def handle_password(client: Client, message: Message):
     user_id = message.from_user.id
@@ -157,15 +107,73 @@ async def handle_password(client: Client, message: Message):
         await message.reply_text(f"✅ تم التوقيع والرفع بنجاح!\nالـ UDID: `{udid}`\nوهو الآن جاهز للتثبيت:", reply_markup=InlineKeyboardMarkup(buttons))
         del user_states[user_id]
 
+def upload_to_github_release(udid, signed_files):
+    headers_api = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    tag_name = f"signed-{udid}"
+    
+    res = requests.get(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tags/{tag_name}", headers=headers_api)
+    if res.status_code == 200:
+        requests.delete(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/{res.json()['id']}", headers=headers_api)
+        requests.delete(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/refs/tags/{tag_name}", headers=headers_api)
+
+    res = requests.post(f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases", headers=headers_api, json={"tag_name": tag_name, "name": f"Signed - {udid}"})
+    release_id = res.json()["id"]
+    upload_url = f"https://uploads.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/{release_id}/assets"
+
+    headers_upload = {"Authorization": f"token {GITHUB_TOKEN}", "Content-Type": "application/octet-stream"}
+    for file_path in signed_files:
+        if os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                requests.post(f"{upload_url}?name={os.path.basename(file_path)}", headers=headers_upload, data=f)
+
 # ==========================================
-# 3. مشغل النظام الشامل
+# 2. إعداد التشغيل الشامل (Lifespan)
 # ==========================================
-async def start_all():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # تشغيل البوت عند إقلاع السيرفر
     await bot.start()
-    port = int(os.environ.get("PORT", 8000))
-    config = uvicorn.Config(api, host="0.0.0.0", port=port, log_level="info")
-    server = uvicorn.Server(config)
-    await server.serve()
+    yield
+    # إيقاف البوت بأمان عند إغلاق السيرفر
+    await bot.stop()
+
+# ==========================================
+# 3. قسم FastAPI (لواجهة الويب والتثبيت)
+# ==========================================
+api = FastAPI(lifespan=lifespan)
+api.mount("/images", StaticFiles(directory="images"), name="images")
+
+@api.get("/")
+async def serve_frontend():
+    return FileResponse("templates/index.html")
+
+@api.get("/api/plist")
+async def generate_plist(app: str, udid: str):
+    ipaUrl = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/signed-{udid}/{app}_{udid}.ipa"
+    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>items</key>
+    <array><dict>
+        <key>assets</key>
+        <array><dict><key>kind</key><string>software-package</string><key>url</key><string>{ipaUrl}</string></dict></array>
+        <key>metadata</key>
+        <dict>
+            <key>bundle-identifier</key><string>com.ibablack.{app}</string>
+            <key>bundle-version</key><string>1.0</string>
+            <key>kind</key><string>software</string>
+            <key>title</key><string>{app.upper()}</string>
+        </dict>
+    </dict></array>
+</dict>
+</plist>"""
+    return Response(
+        content=plist_content, 
+        media_type="application/x-apple-aspen-manifest",
+        headers={"Content-Disposition": f'attachment; filename="{app}.plist"'}
+    )
 
 if __name__ == "__main__":
-    asyncio.run(start_all())
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(api, host="0.0.0.0", port=port)
