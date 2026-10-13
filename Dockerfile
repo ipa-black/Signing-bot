@@ -18,8 +18,8 @@ RUN git clone https://github.com/zhlynn/zsign.git /tmp/zsign && \
 WORKDIR /app
 COPY . /app
 
-# تثبيت مكتبات البايثون
-RUN pip3 install -no-cache-dir -r requirements.txt
+# تثبيت مكتبات البايثون (تم تصحيح الشرطتين هنا)
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 # إنشاء المجلدات الضرورية لتجنب الأخطاء
 RUN mkdir -p certs signed_ipas ipas images templates
