@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 # ==========================================
-# استدعاء المتغيرات والأسرار بأمان من سيرفر Render
+# استدعاء المتغيرات بأمان من بيئة Render
 # ==========================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 API_ID = os.environ.get("API_ID")
@@ -22,7 +22,7 @@ GITHUB_REPO = os.environ.get("GITHUB_REPO")
 RENDER_APP_URL = os.environ.get("RENDER_APP_URL") 
 
 if not all([BOT_TOKEN, API_ID, API_HASH, GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO, RENDER_APP_URL]):
-    print("❌ خطأ: هناك توكنات مفقودة! الرجاء إضافتها في قسم Environment Variables في Render.")
+    print("❌ خطأ: هناك توكنات مفقودة! الرجاء إضافتها في قسم Environment Variables.")
     exit(1)
 
 for d in ["certs", "signed_ipas", "ipas", "images", "templates"]:
@@ -32,7 +32,7 @@ APPS = ["esign", "ksign", "gbox", "scarlet", "feather", "zsign", "cinemana"]
 user_states = {}
 
 # ==========================================
-# 1. قسم FastAPI (لواجهة الويب والتثبيت المباشر)
+# 1. قسم FastAPI (لواجهة الويب والتثبيت)
 # ==========================================
 api = FastAPI()
 api.mount("/images", StaticFiles(directory="images"), name="images")
@@ -94,6 +94,17 @@ def upload_to_github_release(udid, signed_files):
             with open(file_path, "rb") as f:
                 requests.post(f"{upload_url}?name={os.path.basename(file_path)}", headers=headers_upload, data=f)
 
+@bot.on_message(filters.command("start") & filters.private)
+async def start_command(client: Client, message: Message):
+    welcome_text = (
+        "👋 أهلاً بك في بوت التوقيع السريع (IBA Black).\n\n"
+        "لبدء التوقيع، يرجى إرسال ملفات الشهادة الخاصة بك:\n"
+        "1️⃣ ملف الـ `.p12`\n"
+        "2️⃣ ملف الـ `.mobileprovision`\n\n"
+        "يمكنك إرسالها معاً أو كل ملف على حدة لتتمكن من التثبيت المباشر."
+    )
+    await message.reply_text(welcome_text)
+
 @bot.on_message(filters.document & filters.private)
 async def handle_certs(client: Client, message: Message):
     user_id, file_name = message.from_user.id, message.document.file_name
@@ -147,7 +158,7 @@ async def handle_password(client: Client, message: Message):
         del user_states[user_id]
 
 # ==========================================
-# 3. مشغل النظام الشامل (الجسد الواحد)
+# 3. مشغل النظام الشامل
 # ==========================================
 async def start_all():
     await bot.start()
